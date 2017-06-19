@@ -305,6 +305,105 @@ class ServerTests: XCTestCase {
             XCTFail("Error listening on port \(0): \(error). Use server.failed(callback:) to handle")
         }
     }
+
+    func testConnectionClose() {
+        let expectation = self.expectation(description: #function)
+        let request = "GET /test HTTP/1.1\r\nConnection: close\r\n\r\n"
+        let data = request.data(using: .utf8)
+
+        let webApp = SimpleResponseCreator { (request, body) -> (reponse: HTTPResponse, responseBody: Data) in
+            XCTAssertEqual(request.method.rawValue, "GET")
+            XCTAssertEqual(request.httpVersion.major, 1)
+            XCTAssertEqual(request.httpVersion.minor, 1)
+            XCTAssertEqual(request.headers["Connection"][0], "close")
+            expectation.fulfill()
+            return (
+                HTTPResponse(httpVersion: request.httpVersion,
+                             status: .ok,
+                             transferEncoding: .chunked,
+                             headers: HTTPHeaders([("X-foo", "bar")])),
+                "OK!".data(using: .utf8)!)
+        }
+
+        let parser = StreamingParser(webapp: webApp.serve)
+        _ = parser.readStream(data: data!)
+
+        waitForExpectations(timeout: 10)
+    }
+
+    // FIXME: - continue not adding passed in headers properly?
+    func testContinue() throws {
+        let expectation = self.expectation(description: #function)
+
+        let server = BlueSocketSimpleServer()
+        defer {
+            server.stop()
+        }
+        try server.start(port: 0, webapp: ContinueWebApp().serve)
+
+        let url = URL(string: "http://localhost:\(server.port)")!
+        URLSession.shared.dataTask(with: url) { (responseBody, rawResponse, error) in
+            let response = rawResponse as? HTTPURLResponse
+            XCTAssertNil(error, String(describing: error))
+            XCTAssertNotNil(response)
+            XCTAssertNotNil(responseBody)
+            XCTAssertEqual(Int(HTTPResponseStatus.ok.code), response?.statusCode ?? 0)
+            expectation.fulfill()
+            }.resume()
+
+        waitForExpectations(timeout: 10)
+    }
+
+    func testDiscardBody() throws {
+        let expectation = self.expectation(description: #function)
+
+        let server = BlueSocketSimpleServer()
+        defer {
+            server.stop()
+        }
+        try server.start(port: 0, webapp: DiscardBodyWebApp().serve)
+
+        let url = URL(string: "http://localhost:\(server.port)")!
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = "Hello, world!".data(using: .utf8)
+
+        URLSession.shared.dataTask(with: request) { (responseBody, rawResponse, error) in
+            let response = rawResponse as? HTTPURLResponse
+            XCTAssertNil(error, String(describing: error))
+            XCTAssertNotNil(response)
+            XCTAssertNotNil(responseBody)
+            XCTAssertEqual(Int(HTTPResponseStatus.ok.code), response?.statusCode ?? 0)
+            XCTAssertEqual(responseBody?.count, 0)
+            expectation.fulfill()
+            }.resume()
+
+        waitForExpectations(timeout: 10)
+    }
+
+    func testIdentityTransferEncoding() throws {
+        let expectation = self.expectation(description: #function)
+
+        let server = BlueSocketSimpleServer()
+        defer {
+            server.stop()
+        }
+        try server.start(port: 0, webapp: IdentityEncodingWebApp().serve)
+
+        let url = URL(string: "http://localhost:\(server.port)")!
+        URLSession.shared.dataTask(with: url) { (responseBody, rawResponse, error) in
+            let response = rawResponse as? HTTPURLResponse
+            XCTAssertNil(error, String(describing: error))
+            XCTAssertNotNil(response)
+            XCTAssertNotNil(responseBody)
+            XCTAssertEqual(Int(HTTPResponseStatus.ok.code), response?.statusCode ?? 0)
+            XCTAssertEqual(response?.allHeaderFields["Content-Length"] as? String ?? "", String(describing: "Hello, World!".data(using: .utf8)!.count))
+            XCTAssertEqual("Hello, World!", String(data: responseBody ?? Data(), encoding: .utf8) ?? "Nil")
+            expectation.fulfill()
+            }.resume()
+        
+        waitForExpectations(timeout: 10)
+    }
     
     static var allTests = [
         ("testEcho", testEcho),
@@ -316,5 +415,9 @@ class ServerTests: XCTestCase {
         ("testRequestEchoEndToEnd", testRequestEchoEndToEnd),
         ("testRequestKeepAliveEchoEndToEnd", testRequestKeepAliveEchoEndToEnd),
         ("testRequestLargeEchoEndToEnd", testRequestLargeEchoEndToEnd),
+        ("testConnectionClose", testConnectionClose),
+        ("testContinue", testContinue),
+        ("testDiscardBody", testDiscardBody),
+        ("testIdentityTransferEncoding", testIdentityTransferEncoding)
     ]
 }
